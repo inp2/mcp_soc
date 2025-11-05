@@ -26,7 +26,7 @@ def generate_alerts(df):
                 alerts.append({
                     "ts": row.get("ts"),
                     "type": "Failed Connection",
-                    "desc": f"Connection {row.get('id.orig_h')} → {row.get('id.resp_h')} failed ({row.get('conn_state')})"
+                    "desc": f"Connection {row.get('id.orig_h')} | {row.get('id.resp_h')} failed ({row.get('conn_state')})"
                 })
 
         # High data transfer
@@ -38,7 +38,7 @@ def generate_alerts(df):
                 alerts.append({
                     "ts": row.get("ts"),
                     "type": "High Data Transfer",
-                    "desc": f"High transfer {row.get('id.orig_h')} ↔ {row.get('id.resp_h')} ({row.get('resp_bytes')} bytes)"
+                    "desc": f"High transfer {row.get('id.orig_h')} | {row.get('id.resp_h')} ({row.get('resp_bytes')} bytes)"
                 })
 
     # 2️⃣ SSH events
@@ -91,3 +91,51 @@ def generate_alerts(df):
                 })
 
     return pd.DataFrame(alerts)
+
+import pandas as pd
+from datetime import datetime
+import re
+
+def make_timeline(alerts_df, max_desc_len=200):
+    """
+    Build a clean, report-friendly ASCII timeline.
+    Example:
+    2025-11-05 14:02:11 | SSH Brute Force | src=10.0.0.1 -> dst=10.0.0.2 | Multiple failed logins
+    """
+    if alerts_df is None or alerts_df.empty:
+        return []
+
+    # Normalize and sort timestamps
+    if "ts" in alerts_df.columns:
+        alerts_df["ts"] = pd.to_datetime(alerts_df["ts"], errors="coerce")
+    else:
+        alerts_df["ts"] = pd.Timestamp.utcnow()
+    alerts_df = alerts_df.sort_values("ts")
+
+    timeline = []
+
+    for _, row in alerts_df.iterrows():
+        ts = row.get("ts")
+        if pd.isna(ts):
+            ts = datetime.utcnow()
+        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+
+        event_type = str(row.get("type", "Unknown")).strip()
+        src = str(row.get("src_ip", row.get("id.orig_h", "N/A")))
+        dst = str(row.get("dst_ip", row.get("id.resp_h", "N/A")))
+        desc = str(row.get("desc", "")).strip()
+
+        # --- Clean & truncate description ---
+        desc = re.sub(r"\s+", " ", desc)       # collapse spaces
+        desc = re.sub(r"[^\x20-\x7E]", "", desc)  # remove non-ASCII chars
+        if len(desc) > max_desc_len:
+            desc = desc[:max_desc_len] + " ...[truncated]"
+
+        # --- Assemble readable ASCII-only entry ---
+        entry = f"{ts_str} | {event_type} | src={src} -> dst={dst}"
+        if desc:
+            entry += f" | {desc}"
+
+        timeline.append(entry)
+
+    return timeline

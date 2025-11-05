@@ -4,48 +4,43 @@ from transformers import pipeline
 from threading import Thread
 import pandas as pd
 from transformers import pipeline
-
+from agents.utils import clean_zeek_logs
 import pandas as pd
 from transformers import pipeline
 import pandas as pd
 from transformers import pipeline
-
 def summarize_dataset(
     df,
+    event_filter="dhcp",
     model_name="sshleifer/distilbart-cnn-12-6",
-    max_chars_per_chunk=1800,   # much smaller chunks
-    max_summary_tokens=256
+    max_chars_per_chunk=1800,
+    max_summary_tokens=256,
 ):
     """
-    Highly robust summarizer for Zeek/Corelight data.
-    - Uses small chunk sizes to avoid embedding overflow
-    - Removes conflicting token args
-    - Gracefully skips failed chunks
+    Summarize only Zeek/Corelight events of a specific type (e.g. dhcp, ssh).
     """
+    # Clean and filter
+    df = clean_zeek_logs(df, event_filter=event_filter)
     if df.empty:
-        return "No data available to summarize.", {}
+        return f"No {event_filter.upper()} data found to summarize.", {}
 
     stats = {
         "rows": len(df),
-        "columns": len(df.columns),
         "unique_src": df.get("id.orig_h", pd.Series()).nunique(),
         "unique_dst": df.get("id.resp_h", pd.Series()).nunique(),
         "event_types": df["_path"].value_counts().to_dict() if "_path" in df else {},
     }
 
-    # Sample top 300 rows for readability
+    # Prepare text sample
     sample_text = df.head(300).to_csv(index=False)
     text = (
-        "Summarize these Zeek/Corelight logs for a SOC analyst. "
-        "Highlight main event types, notable patterns, and anomalies.\n\n"
+        f"Summarize the following Zeek/Corelight {event_filter.upper()} logs for a SOC analyst. "
+        "Highlight event frequency, anomalies, and relevant network behavior.\n\n"
         f"{sample_text}"
     )
 
-    # Split text into *very small* pieces to stay under 512 tokens per chunk
     chunks = [text[i:i + max_chars_per_chunk] for i in range(0, len(text), max_chars_per_chunk)]
-
     summarizer = pipeline("summarization", model=model_name)
-
     summaries = []
     for i, chunk in enumerate(chunks):
         try:
@@ -62,21 +57,19 @@ def summarize_dataset(
             continue
 
     if not summaries:
-        final_summary = "No summary could be generated (all chunks skipped)."
-    else:
-        merged = " ".join(summaries)
-        # re-summarize merged text for coherence
-        try:
-            final_summary = summarizer(
-                merged[:max_chars_per_chunk * 2],
-                truncation=True,
-                max_length=max_summary_tokens,
-                min_length=80,
-                do_sample=False,
-            )[0]["summary_text"]
-        except Exception as e:
-            print(f"[WARN] Final merge summarization failed: {e}")
-            final_summary = merged
+        return "No summary could be generated.", stats
+
+    merged = " ".join(summaries)[:max_chars_per_chunk * 2]
+    try:
+        final_summary = summarizer(
+            merged,
+            truncation=True,
+            max_length=max_summary_tokens,
+            min_length=80,
+            do_sample=False,
+        )[0]["summary_text"]
+    except Exception:
+        final_summary = merged
 
     return final_summary, stats
 

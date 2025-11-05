@@ -7,16 +7,20 @@ from transformers import pipeline
 
 import pandas as pd
 from transformers import pipeline
+import pandas as pd
+from transformers import pipeline
 
 def summarize_dataset(
     df,
     model_name="sshleifer/distilbart-cnn-12-6",
-    max_chars_per_chunk=3000,
-    max_tokens=256
+    max_chars_per_chunk=1800,   # much smaller chunks
+    max_summary_tokens=256
 ):
     """
-    Robust summarizer with safe truncation and chunking for Zeek/Corelight logs.
-    Prevents index overflow errors in HF models.
+    Highly robust summarizer for Zeek/Corelight data.
+    - Uses small chunk sizes to avoid embedding overflow
+    - Removes conflicting token args
+    - Gracefully skips failed chunks
     """
     if df.empty:
         return "No data available to summarize.", {}
@@ -29,15 +33,15 @@ def summarize_dataset(
         "event_types": df["_path"].value_counts().to_dict() if "_path" in df else {},
     }
 
-    # Prepare text
+    # Sample top 300 rows for readability
     sample_text = df.head(300).to_csv(index=False)
     text = (
         "Summarize these Zeek/Corelight logs for a SOC analyst. "
-        "Mention common event types, notable hosts, and any anomalies.\n\n"
+        "Highlight main event types, notable patterns, and anomalies.\n\n"
         f"{sample_text}"
     )
 
-    # Split text safely into small pieces
+    # Split text into *very small* pieces to stay under 512 tokens per chunk
     chunks = [text[i:i + max_chars_per_chunk] for i in range(0, len(text), max_chars_per_chunk)]
 
     summarizer = pipeline("summarization", model=model_name)
@@ -48,8 +52,7 @@ def summarize_dataset(
             result = summarizer(
                 chunk,
                 truncation=True,
-                max_length=max_tokens,
-                max_new_tokens=max_tokens,
+                max_length=max_summary_tokens,
                 min_length=60,
                 do_sample=False,
             )
@@ -59,20 +62,21 @@ def summarize_dataset(
             continue
 
     if not summaries:
-        final_summary = "No summary could be generated (input too large or invalid)."
+        final_summary = "No summary could be generated (all chunks skipped)."
     else:
-        summary_input = " ".join(summaries)[:max_chars_per_chunk]
+        merged = " ".join(summaries)
+        # re-summarize merged text for coherence
         try:
             final_summary = summarizer(
-                summary_input,
+                merged[:max_chars_per_chunk * 2],
                 truncation=True,
-                max_length=max_tokens,
-                max_new_tokens=max_tokens,
+                max_length=max_summary_tokens,
                 min_length=80,
                 do_sample=False,
             )[0]["summary_text"]
-        except Exception:
-            final_summary = summary_input
+        except Exception as e:
+            print(f"[WARN] Final merge summarization failed: {e}")
+            final_summary = merged
 
     return final_summary, stats
 

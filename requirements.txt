@@ -1,3 +1,4 @@
+fpdf
 faiss-cpu
 sentence-transformers
 transformers
@@ -6,3 +7,6 @@ flask
 pandas
 numpy
 pyyaml
+transformers
+sentencepiece
+torch

@@ -1,0 +1,8 @@
+faiss-cpu
+sentence-transformers
+transformers
+PyPDF2
+flask
+pandas
+numpy
+pyyaml

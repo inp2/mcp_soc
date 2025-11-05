@@ -1,4 +1,0 @@
-from agents.summarizer import summarize_dataset
-df = incident_cache["df"]
-summary, stats = summarize_dataset(df)
-print(summary[:500])

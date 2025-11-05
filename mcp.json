@@ -1,0 +1,10 @@
+{
+  "mcp": {
+    "name": "soc_multiagent_mcp",
+    "endpoints": [
+      {"name": "collector", "url": "http://localhost:8899/collector"},
+      {"name": "analyzer", "url": "http://localhost:8899/analyzer"},
+      {"name": "reporter", "url": "http://localhost:8899/reporter"}
+    ]
+  }
+}

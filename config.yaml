@@ -1,0 +1,3 @@
+ollama_model: mistral
+embedding_model: all-MiniLM-L6-v2
+port: 8899

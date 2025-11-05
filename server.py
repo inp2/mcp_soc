@@ -1,11 +1,12 @@
 from flask import Flask, jsonify, request
 import yaml
-from utils import extract_text_from_pdf
+from utils import extract_text_from_pdf, generate_pdf_report, print_timeline_to_terminal
 from embeddings import EmbeddingIndex
 from agents.collector import collect_logs
-from agents.analyzer import generate_alerts, make_timeline, map_timeline_to_mitre
+# from agents.analyzer import generate_alerts, make_timeline, map_timeline_to_mitre, fast_mitre_map, detect_unusual_ports
+from agents.analyzer import generate_alerts, make_timeline
 from agents.reporter import query_tactic
-from agents.summarizer import summarize_dataset, generate_pdf_report
+# from agents.summarizer import summarize_dataset, generate_pdf_report
 from threading import Thread
 
 # ----------------------------------------------------------
@@ -54,11 +55,34 @@ def analyze():
     df = incident_cache.get("df")
     if df is None:
         return jsonify({"error":"No logs loaded"}),400
+
     alerts = generate_alerts(df)
+    if alerts.empty:
+        return jsonify({"status": "ok", "alerts": [], "summary": {}})
+
+    # alerts = fast_mitre_map(alerts)
+    summary = alerts["type"].value_counts().to_dict()
+    # Build summary + timeline
     timeline = make_timeline(alerts)
-    mapped = map_timeline_to_mitre(timeline, embed_index.retrieve, OLLAMA_MODEL)
-    incident_cache["timeline"] = mapped
-    return jsonify(mapped)
+
+    print_timeline_to_terminal(summary, timeline)
+
+    # Generate PDF report
+    # pdf_path = generate_pdf_report(summary=summary, timeline=timeline)
+    
+    return jsonify({
+        "status": "ok",
+        "summary": summary,
+        "alerts": alerts.to_dict(orient="records")
+    })
+    # alerts = fast_mitre_map(alerts)
+    # summary = alerts["type"].value_counts().to_dict()
+    # return jsonify({"alerts": alerts.to_dict(orient="records"),
+    #                 "summary": summary})
+    # timeline = make_timeline(alerts)
+    # mapped = map_timeline_to_mitre(timeline, embed_index.retrieve, OLLAMA_MODEL)
+    # incident_cache["timeline"] = mapped
+    # return jsonify(mapped)
 
 @app.route("/reporter", methods=["POST"])
 def report():
@@ -68,25 +92,27 @@ def report():
     result = query_tactic(tactic, mapped, embed_index.retrieve, OLLAMA_MODEL)
     return jsonify({"tactic": tactic, "response": result})
 
-@app.route("/summarizer", methods=["GET"])
+@app.route("/summarizer", methods=["POST"])
 def summarizer():
+    global incident_cache
     df = incident_cache.get("df")
     if df is None:
         return jsonify({"error": "No dataset loaded. Run /collector first."}), 400
 
-    def run_summary():
-        try:
-            summary_text, stats = summarize_dataset(df, model_name="facebook/bart-large-cnn")
-            output_path = generate_pdf_report(summary_text, stats)
-            return jsonify({
-                "status": "ok",
-                "pdf_path": output_path,
-                "summary_excerpt": summary_text[:300] + "..."
-            })
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    Thread(target=run_summary).start()
-    return jsonify({"status": "processing"})
+    data = request.get_json(force=True)
+    event_filter = data.get("event_filter", "dhcp")
+
+    try:
+        summary_text, stats = summarize_dataset(df, event_filter=event_filter)
+        output_path = generate_pdf_report(summary_text, stats, f"store/soc_summary_{event_filter}.pdf")
+        return jsonify({
+            "status": "ok",
+            "pdf_path": output_path,
+            "event_filter": event_filter,
+            "summary_excerpt": summary_text[:300] + "..."
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=cfg["port"])

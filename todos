@@ -1,8 +1,11 @@
 # Todos
 
 * Readme
+* network graph of attack
+* mitre attack
+* use corelight cheat sheet
+
 * fix collector to better read in all the data
 * analyzer currently does not find anything, fix that to all for that
 * reporter, reports back tactics, maybe report group
 * add a RAG to analyzer
-* add evidence to report back for reporter

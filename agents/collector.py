@@ -30,14 +30,24 @@ def expand_raw_json(df):
     expanded_df = pd.json_normalize(expanded_rows)
     return expanded_df
 
-def collect_logs(json_path):
+def collect_logs(json_path, verbose=True):
     df = load_zeek_logs(json_path)
+    path_counts = df["_path"].value_counts() if "_path" in df else pd.Series(dtype=int)
+    time_range = [str(df["ts"].min()), str(df["ts"].max())] if "ts" in df else [None, None]
+
+    df = expand_raw_json(df)
+
     stats = {
         "rows": len(df),
-        "time_range": [str(df["ts"].min()), str(df["ts"].max())],
+        "time_range": time_range,
         "columns": list(df.columns),
-        "paths": df["_path"].value_counts().to_dict() if "_path" in df else {},
+        "paths": path_counts.to_dict(),
     }
-    df = expand_raw_json(df)
-    print(df["_path"].value_counts())
+
+    if verbose:
+        if not path_counts.empty:
+            print(path_counts)
+        else:
+            print("[INFO] No '_path' column found in dataset.")
+
     return df, stats

@@ -1,15 +1,76 @@
-from fpdf import FPDF
+from __future__ import annotations
+
 from datetime import datetime
-import os
-import subprocess
-import PyPDF2
-import pandas as pd
-import numpy as np
-import json
+from pathlib import Path
 import gzip
-import io
+import json
+import os
 import re
+import subprocess
 import textwrap
+
+import pandas as pd
+import PyPDF2
+from fpdf import FPDF
+from zat import zeek_log_reader
+
+
+def _open_log_text(path: Path):
+    """Open a Zeek/Corelight export as text, transparently handling gzip files."""
+
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8", errors="ignore")
+    return path.open("rt", encoding="utf-8", errors="ignore")
+
+
+def _extract_records_from_container(container):
+    """Return the first list of records found inside a JSON container."""
+
+    if isinstance(container, list):
+        return container
+
+    if isinstance(container, dict):
+        # Prefer common keys used by various APIs
+        for key in ("records", "data", "results", "items", "events", "rows", "log", "entries"):
+            value = container.get(key)
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                nested = _extract_records_from_container(value)
+                if nested:
+                    return nested
+
+        # Fallback: search remaining nested containers depth-first
+        for value in container.values():
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                nested = _extract_records_from_container(value)
+                if nested:
+                    return nested
+
+        return [container]
+
+    return []
+
+
+def _merge_embedded_raw(record):
+    """If Zeek embeds JSON blobs inside *_raw fields, merge them into the record."""
+
+    if not isinstance(record, dict):
+        return record
+
+    for raw_key in ("_raw", "result._raw"):
+        raw_value = record.get(raw_key)
+        if isinstance(raw_value, str):
+            try:
+                inner = json.loads(raw_value)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(inner, dict):
+                record = {**record, **inner}
+
+    return record
 
 def ollama_complete(prompt, model="mistral", tokens=400):
     cmd = ["ollama", "run", model, "--num-predict", str(tokens)]
@@ -20,61 +81,67 @@ def extract_text_from_pdf(pdf_path):
     reader = PyPDF2.PdfReader(pdf_path)
     return "\n".join([p.extract_text() or "" for p in reader.pages])
 
-import os
-import pandas as pd
-from zat import zeek_log_reader
-import json
-
-def load_zeek_logs(path: str) -> pd.DataFrame:
+def load_zeek_logs(path: str | os.PathLike[str]) -> pd.DataFrame:
     """
     Load Zeek (Bro/Corelight) logs into a pandas DataFrame using ZAT.
     Handles conn.log, dhcp.log, ssh.log, and JSON-line logs from Corelight exports.
     """
 
+    path = Path(path)
+    path_str = str(path)
+
     # Case 1: Standard Zeek logs (.log)
-    if path.endswith(".log") or "zeek" in path or "corelight" in path:
+    if path.suffix == ".log" or "zeek" in path_str.lower() or "corelight" in path_str.lower():
         try:
-            reader = zeek_log_reader.ZeekLogReader(path)
-            df = pd.DataFrame([row for row in reader.readrows()])
+            reader = zeek_log_reader.ZeekLogReader(path_str)
+            df = pd.DataFrame(list(reader.readrows()))
             if "ts" in df.columns:
                 df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
             return df.sort_values("ts", ignore_index=True)
         except Exception as e:
             print(f"[WARN] Could not parse via ZeekLogReader: {e}")
 
-    # Case 2: JSON-lines (NDJSON) from Corelight API exports
+    # Case 2: Structured JSON containers or NDJSON exports
     records = []
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if "_raw" in obj:
-                    inner = json.loads(obj["_raw"])
-                    merged = {**obj, **inner}
-                    records.append(merged)
-                else:
-                    records.append(obj)
-            except Exception:
-                continue
 
-    df = pd.json_normalize(records)
-    if "ts" in df.columns:
-        df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
-    elif "_time" in df.columns:
-        df["ts"] = pd.to_datetime(df["_time"], errors="coerce")
-    else:
-        df["ts"] = pd.date_range("1970-01-01", periods=len(df), freq="S")
+    try:
+        with _open_log_text(path) as handle:
+            container = json.load(handle)
+        records = _extract_records_from_container(container)
+    except json.JSONDecodeError:
+        # Fallback: NDJSON / JSON-lines
+        with _open_log_text(path) as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line in ("[", "]", ","):
+                    continue
+                try:
+                    obj = json.loads(line.rstrip(","))
+                except json.JSONDecodeError:
+                    continue
+                records.append(_merge_embedded_raw(obj))
+    except FileNotFoundError:
+        raise
 
-    return df.sort_values("ts", ignore_index=True)
+    if not records:
+        return pd.DataFrame()
 
-from fpdf import FPDF
-from datetime import datetime
-import os
-import re
-import textwrap
+    df = pd.json_normalize([_merge_embedded_raw(rec) for rec in records])
+
+    if not df.empty:
+        if "ts" in df.columns:
+            df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+        elif "_time" in df.columns:
+            df["ts"] = pd.to_datetime(df["_time"], errors="coerce")
+        elif len(df) > 0:
+            df["ts"] = pd.date_range("1970-01-01", periods=len(df), freq="S")
+
+        if "ts" in df.columns:
+            df = df.sort_values("ts", ignore_index=True)
+        else:
+            df = df.reset_index(drop=True)
+
+    return df
 
 def generate_pdf_report(summary, timeline, stats=None, output_path=None):
     """

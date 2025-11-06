@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "path",
         nargs="?",
-        default="data/AI_MCP_ENG.json",
+        default="../data/AI_MCP_ENG.json",
         help="Path to the AI_MCP_ENG dataset (supports .json and .json.gz).",
     )
     parser.add_argument(
@@ -56,17 +56,8 @@ def main() -> None:
 
     df, stats = collect_logs(str(dataset_path), verbose=False)
 
-    if args.show_stats:
-        print(json.dumps(stats, indent=2, default=str))
-
-    if args.head:
-        head_rows = df.head(args.head)
-        if head_rows.empty:
-            print("[INFO] Dataset loaded but contains no rows to display.")
-        else:
-            # Pandas prints NaT nicely when using to_string with index=False
-            print(head_rows.to_string(index=False))
-
+    df = df.rename(columns={"_path": "protocol", "_system_name": "system_name", "_write_ts": "write_ts"})
+    print(df.head(20))
 
 if __name__ == "__main__":
     main()
